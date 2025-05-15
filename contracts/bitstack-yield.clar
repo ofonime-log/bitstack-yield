@@ -223,3 +223,85 @@
     (ok true)
   )
 )
+
+;; Deposit and Withdrawal Functions
+
+(define-public (deposit
+    (token-trait <sip-010-trait>)
+    (amount uint)
+  )
+  (let (
+      (user-principal tx-sender)
+      (current-deposit (default-to {
+        amount: u0,
+        last-deposit-block: u0,
+      }
+        (map-get? user-deposits { user: user-principal })
+      ))
+    )
+    ;; Validate token and check deposit constraints
+    (try! (validate-token token-trait))
+    (asserts! (not (var-get emergency-shutdown)) ERR-STRATEGY-DISABLED)
+    (asserts! (>= amount (var-get min-deposit)) ERR-MIN-DEPOSIT-NOT-MET)
+    (asserts! (<= (+ amount (get amount current-deposit)) (var-get max-deposit))
+      ERR-MAX-DEPOSIT-REACHED
+    )
+    ;; Safely transfer tokens to contract
+    (try! (safe-token-transfer token-trait amount user-principal
+      (as-contract tx-sender)
+    ))
+    ;; Update user deposits
+    (map-set user-deposits { user: user-principal } {
+      amount: (+ amount (get amount current-deposit)),
+      last-deposit-block: stacks-block-height,
+    })
+    ;; Update TVL
+    (var-set total-tvl (+ (var-get total-tvl) amount))
+    ;; Rebalance protocols if needed
+    (try! (rebalance-protocols))
+    (ok true)
+  )
+)
+
+(define-public (withdraw
+    (token-trait <sip-010-trait>)
+    (amount uint)
+  )
+  (let (
+      (user-principal tx-sender)
+      (current-deposit (default-to {
+        amount: u0,
+        last-deposit-block: u0,
+      }
+        (map-get? user-deposits { user: user-principal })
+      ))
+    )
+    ;; Validate token and check withdrawal constraints
+    (try! (validate-token token-trait))
+    (asserts! (<= amount (get amount current-deposit)) ERR-INSUFFICIENT-BALANCE)
+    ;; Update user deposits
+    (map-set user-deposits { user: user-principal } {
+      amount: (- (get amount current-deposit) amount),
+      last-deposit-block: (get last-deposit-block current-deposit),
+    })
+    ;; Update TVL
+    (var-set total-tvl (- (var-get total-tvl) amount))
+    ;; Safely transfer tokens back to user
+    (as-contract (try! (safe-token-transfer token-trait amount tx-sender user-principal)))
+    (ok true)
+  )
+)
+
+;; Token Transfer Functions
+
+(define-private (safe-token-transfer
+    (token-trait <sip-010-trait>)
+    (amount uint)
+    (sender principal)
+    (recipient principal)
+  )
+  (begin
+    (try! (validate-token token-trait))
+    (contract-call? token-trait transfer amount sender recipient none)
+  )
+)
